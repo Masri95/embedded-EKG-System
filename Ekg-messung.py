@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ECG ADS1115 + HP/Notch/LP
-# Optimized SDL drawing for Raspberry Pi Zero (NO FILE SAVING)
+
 
 import os
 import time
@@ -24,9 +24,9 @@ os.environ.setdefault("SDL_VIDEODRIVER", "KMSDRM")
 # Zeitparameter / Anzeige
 # =========================
 SAMPLE_DT   = 0.005   # 200 Hz target
-PLOT_DT     = 0.03    # UI update interval
-WINDOW_SEC  = 3.0     # plot window length
-FS = 1.0 / SAMPLE_DT  # sampling frequency (nominal)
+PLOT_DT     = 0.03    # Aktualisierungsintervall der Anzeige
+WINDOW_SEC  = 3.0     # Zeitfenster der dargestellten Kurve
+FS = 1.0 / SAMPLE_DT  #Abtastfrequenz
 
 DISPLAY_MA_N = 5
 STEP_DRAW = 2
@@ -41,8 +41,8 @@ MAX_TAKE_PER_FRAME = 600
 I2C_BUS = 1
 ADS_ADDR = 0x48
 
-FS_VOLT = 4.096
-LSB = FS_VOLT / 32768.0
+FS_VOLT =4.096   # Vollbereichsspannung
+LSB = FS_VOLT / 32768.0  # Auflösung pro Bit
 
 REG_CONV  = 0x00
 REG_CFG   = 0x01
@@ -51,7 +51,7 @@ REG_CFG   = 0x01
 # 50 Hz Notch
 # =========================
 NOTCH_F0 = 50.0
-NOTCH_Q  = 10.0
+NOTCH_Q  = 25.0
 
 _w0 = 2.0 * math.pi * (NOTCH_F0 / FS)
 _alpha = math.sin(_w0) / (2.0 * NOTCH_Q)
@@ -72,7 +72,7 @@ _a2 /= _a0
 # =========================
 # Globales Lauf-Flag
 # =========================
-running = True
+running = True  #steuert die Hauptschleife des Programms
 
 def on_sigint(sig, frame):
     global running
@@ -218,6 +218,7 @@ class ECGProcessor:
             idx = max(0, min(n - 1, idx))
             return buf[idx]
 
+
         self.NPKI = q(0.20)
         self.SPKI = q(0.90)
         if self.SPKI < self.NPKI:
@@ -255,6 +256,7 @@ class ECGProcessor:
         while self.peak_times and self.peak_times[0] < min_i:
             self.peak_times.popleft()
 
+        # RR-Erkennung: peak Berechnung
         if len(self.peak_times) < 2:
             return
 
@@ -271,6 +273,7 @@ class ECGProcessor:
         if rr_use <= 0:
             return
 
+        # rr_avg
         if self.rr_avg is not None:
             rrs2 = [rr for rr in rrs if (0.80 * self.rr_avg) <= rr <= (1.25 * self.rr_avg)]
             if rrs2:
@@ -278,6 +281,7 @@ class ECGProcessor:
 
         bpm_new = 60.0 / rr_use
 
+        # jump confirmation
         if self.bpm_display > 0 and bpm_new > (self.bpm_display + self.jump_threshold_bpm):
             self.jump_count += 1
             if self.jump_count < self.jump_confirm_n:
@@ -285,6 +289,7 @@ class ECGProcessor:
         else:
             self.jump_count = 0
 
+        # asymmetric smoothing
         if self.bpm_display <= 0:
             self.bpm_display = bpm_new
         else:
@@ -300,7 +305,7 @@ class ECGProcessor:
 
         # High-pass
         if use_highpass:
-            hp_win_sec = 1.0
+            hp_win_sec = 0.3
             alpha_hp = SAMPLE_DT / (hp_win_sec + SAMPLE_DT)
             self.baseline += alpha_hp * (voltage - self.baseline)
             hp = voltage - self.baseline
@@ -317,7 +322,7 @@ class ECGProcessor:
 
         # Low-pass
         if use_lowpass:
-            fc = 20.0
+            fc = 30.0
             lp_tau = 1.0 / (2.0 * math.pi * fc)
             alpha_lp = SAMPLE_DT / (lp_tau + SAMPLE_DT)
             self.lp += alpha_lp * (hp - self.lp)
@@ -340,14 +345,14 @@ class ECGProcessor:
                 self._finalize_warmup()
             return filtered, self.bpm_inst, self.bpm_display
 
-        # Auto recovery
+        # Auto recovery:  bpm/peak
         if self.have_valid_bpm and self.last_accept_i is not None:
             if i - self.last_accept_i > int(self.no_peak_recover_sec * FS):
                 self._do_recover()
                 return filtered, self.bpm_inst, self.bpm_display
 
         # Threshold
-        THR1 = self.NPKI + 0.12 * (self.SPKI - self.NPKI)
+        THR1 = self.NPKI + 0.15 * (self.SPKI - self.NPKI)
 
         self.dbg_thr1 = THR1
         self.dbg_mwi  = mwi
@@ -366,6 +371,7 @@ class ECGProcessor:
                 self.event_max_absf_i = i
                 self.event_above_count = 1
             else:
+                #  NPKI: event
                 self.NPKI = 0.02 * mwi + 0.98 * self.NPKI
 
             return filtered, self.bpm_inst, self.bpm_display
@@ -472,13 +478,16 @@ class ECGApp:
         self.ma_buf = deque(maxlen=DISPLAY_MA_N)
         self.ma_sum = 0.0
 
-        self.SCALE = 25
+        self.SCALE = 20
 
         self.text_items = []
         self.last_text_t = 0.0
         self.last_idx = 0
+        self.log_signal= []
 
         self.sampler_thread = None
+
+        # Restart flag:
         self.restart_evt = threading.Event()
 
     @staticmethod
@@ -530,13 +539,30 @@ class ECGApp:
             return 0
         if y >= self.plot_h:
             return self.plot_h - 1
+
         return y
+
+    def _save_signal_file(self):
+         if not self.log_signal:
+              return
+
+         subject="test1"
+         ts= time.strftime("%Y%m%d_%H%M%S")
+         fname = f"ekg_{subject}_{ts}.csv"
+
+         with open(fname, "w") as f:
+              f.write("time_s,ekg_V\n")
+              for t, V in self.log_signal:
+                   f.write(f"{t:.6f},{V:.6f}\n")
+
+         print(f"EKG signal hat gespeichert in {fname}")
 
     def _sampler_worker(self):
         global running
 
         i = 0
-        next_t = time.perf_counter()
+        # fester Zeitbezug: Zielzeit = t0 + i * SAMPLE_DT
+        t0 = time.perf_counter()
 
         last_rate_t = time.perf_counter()
         count = 0
@@ -551,9 +577,11 @@ class ECGApp:
         while running:
             if self.paused:
                 sleepf(0.01)
-                next_t = perf()
+                # Referenz neu setzen, damit es nach PAUSE keinen großen Sprung gibt
+                t0 = perf() - i * SAMPLE_DT
                 continue
 
+            # Restart in place
             if self.restart_evt.is_set():
                 self.restart_evt.clear()
                 try:
@@ -562,11 +590,9 @@ class ECGApp:
                     pass
                 i = 0
                 count = 0
+                t0 = perf()
                 last_rate_t = perf()
-                next_t = perf()
                 continue
-
-            next_t += SAMPLE_DT
 
             try:
                 v = read_v()
@@ -587,11 +613,14 @@ class ECGApp:
                 count = 0
                 last_rate_t = now
 
-            slp = next_t - perf()
+            # feste Zeitplanung (ähnlich wie ekgmit200): keine Reset-Drift
+            target = t0 + i * SAMPLE_DT
+            slp = target - perf()
             if slp > 0:
                 sleepf(slp)
             else:
-                next_t = perf()
+                # wir sind spät -> nur yield, aber NICHT t0/target zurücksetzen
+                sleepf(0)
 
     def _init_hw(self):
         self.ads = ADS1115Reader(I2C_BUS, ADS_ADDR)
@@ -616,10 +645,9 @@ class ECGApp:
         self.W, self.H = Wc.value, Hc.value
         self.plot_h = max(50, self.H - TEXT_ZONE_H)
 
-        # IMPORTANT: try accelerated FIRST (often less CPU than software on Pi)
-        self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_ACCELERATED)
+        self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_SOFTWARE)
         if not self.ren:
-            self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_SOFTWARE)
+            self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_ACCELERATED)
         if not self.ren:
             raise RuntimeError("CreateRenderer failed: " + sdl2.SDL_GetError().decode())
 
@@ -632,6 +660,7 @@ class ECGApp:
         self.xs = [int(i * (self.W - 1) / (self.PW - 1)) for i in range(self.PW)]
 
     def _restart_everything_in_place(self):
+
         self.restart_evt.set()
         self.buf.clear()
 
@@ -663,6 +692,7 @@ class ECGApp:
                 if key == sdl2.SDLK_l:
                     self.use_lowpass = not self.use_lowpass
 
+                #  Restart-in-place (R)
                 if key == sdl2.SDLK_r:
                     self._restart_everything_in_place()
 
@@ -676,6 +706,7 @@ class ECGApp:
 
         t_show = self.last_idx * SAMPLE_DT
 
+        #ا bpm_displa : bpm_inst
         if self.proc.bpm_display > 0:
             bpm_show = int(round(self.proc.bpm_display))
         elif self.proc.bpm_inst > 0:
@@ -711,12 +742,12 @@ class ECGApp:
             sdl2.SDL_RenderClear(self.ren)
 
         sdl2.SDL_SetRenderDrawColor(self.ren, 0, 255, 0, 255)
-
         n = len(self.ecg_disp)
+        step = max(1, STEP_DRAW)
+
         if n >= 2:
-            # Adaptive downsample:
+            # Adaptive downsampling:
             # don't draw more segments than pixels -> huge CPU savings on Pi Zero
-            # target about 1-2 segments per pixel max
             adaptive_step = max(1, n // max(1, self.W))
             step = max(1, STEP_DRAW, adaptive_step)
 
@@ -789,6 +820,9 @@ class ECGApp:
                             self.use_lowpass
                         )
 
+                        t_sec= idx * SAMPLE_DT
+                        self.log_signal.append((t_sec, filt))
+
                         if len(self.ma_buf) == self.ma_buf.maxlen:
                             self.ma_sum -= self.ma_buf[0]
                         self.ma_buf.append(filt)
@@ -835,6 +869,8 @@ class ECGApp:
         if self.ads:
             self.ads.close()
             self.ads = None
+
+        self._save_signal_file()
 
         print("Programm beendet.")
 
