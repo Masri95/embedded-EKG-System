@@ -645,9 +645,9 @@ class ECGApp:
         self.W, self.H = Wc.value, Hc.value
         self.plot_h = max(50, self.H - TEXT_ZONE_H)
 
-        self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_SOFTWARE)
+        self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_ACCELERATED)
         if not self.ren:
-            self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_ACCELERATED)
+            self.ren = sdl2.SDL_CreateRenderer(self.window, -1, sdl2.SDL_RENDERER_SOFTWARE)
         if not self.ren:
             raise RuntimeError("CreateRenderer failed: " + sdl2.SDL_GetError().decode())
 
@@ -876,3 +876,4 @@ class ECGApp:
 
 if __name__ == "__main__":
     ECGApp().run()
+
